@@ -4645,7 +4645,7 @@ WOLFSSL_ABI
 WOLFSSL_X509_NAME* wolfSSL_X509_get_subject_name(WOLFSSL_X509* cert)
 {
     WOLFSSL_ENTER("wolfSSL_X509_get_subject_name");
-    if (cert && cert->subject.sz > 0)
+    if (cert)
         return &cert->subject;
     return NULL;
 }
@@ -4721,7 +4721,7 @@ WOLFSSL_ABI
 WOLFSSL_X509_NAME* wolfSSL_X509_get_issuer_name(WOLFSSL_X509* cert)
 {
     WOLFSSL_ENTER("X509_get_issuer_name");
-    if (cert && cert->issuer.sz > 0)
+    if (cert)
         return &cert->issuer;
     return NULL;
 }
@@ -5482,6 +5482,11 @@ int wolfSSL_X509_cmp(const WOLFSSL_X509 *a, const WOLFSSL_X509 *b)
                     }
                 #else
                     {
+                        word32 idx = 0;
+                        int  sz;
+                        byte lbit = 0;
+                        int  rawLen;
+                        unsigned char* rawKey;
                     #ifdef WOLFSSL_SMALL_STACK
                         RsaKey *rsa = (RsaKey*)XMALLOC(sizeof(RsaKey), NULL,
                                 DYNAMIC_TYPE_RSA);
@@ -5492,11 +5497,6 @@ int wolfSSL_X509_cmp(const WOLFSSL_X509 *a, const WOLFSSL_X509 *b)
                     #else
                         RsaKey rsa[1];
                     #endif
-                        word32 idx = 0;
-                        int  sz;
-                        byte lbit = 0;
-                        int  rawLen;
-                        unsigned char* rawKey;
 
                         if (wc_InitRsaKey(rsa, NULL) != 0) {
                             WOLFSSL_MSG("wc_InitRsaKey failure");
@@ -8171,7 +8171,6 @@ WOLF_STACK_OF(WOLFSSL_X509)* wolfSSL_X509_chain_up_ref(
     }
 #endif /* WOLFSSL_CERT_REQ */
 
-#ifdef WOLFSSL_ALT_NAMES
     /* converts WOLFSSL_AN1_TIME to Cert form, returns positive size on
      * success */
     static int CertDateFromX509(byte* out, int outSz, WOLFSSL_ASN1_TIME* t)
@@ -8182,14 +8181,13 @@ WOLF_STACK_OF(WOLFSSL_X509)* wolfSSL_X509_chain_up_ref(
             return BUFFER_E;
         }
 
-        out[0] = t->type;
+        out[0] = (byte) t->type;
         sz = SetLength(t->length, out + 1) + 1;  /* gen tag */
         for (i = 0; i < t->length; i++) {
             out[sz + i] = t->data[i];
         }
         return t->length + sz;
     }
-#endif /* WOLFSSL_ALT_NAMES */
 
     /* convert a WOLFSSL_X509 to a Cert structure for writing out */
     static int CertFromX509(Cert* cert, WOLFSSL_X509* x509)
@@ -8209,7 +8207,6 @@ WOLF_STACK_OF(WOLFSSL_X509)* wolfSSL_X509_chain_up_ref(
 
         cert->version = (int)wolfSSL_X509_get_version(x509);
 
-    #ifdef WOLFSSL_ALT_NAMES
         if (x509->notBefore.length > 0) {
             cert->beforeDateSz = CertDateFromX509(cert->beforeDate,
                         CTC_DATE_SIZE, &x509->notBefore);
@@ -8234,6 +8231,7 @@ WOLF_STACK_OF(WOLFSSL_X509)* wolfSSL_X509_chain_up_ref(
             cert->afterDateSz = 0;
         }
 
+    #ifdef WOLFSSL_ALT_NAMES
         cert->altNamesSz = FlattenAltNames(cert->altNames,
                 sizeof(cert->altNames), x509->altNames);
     #endif /* WOLFSSL_ALT_NAMES */
@@ -12257,11 +12255,38 @@ int wolfSSL_X509_REQ_add1_attr_by_txt(WOLFSSL_X509 *req,
 #endif
 }
 
+
+static int wolfSSL_X509_ATTRIBUTE_set(WOLFSSL_X509_ATTRIBUTE* attr,
+        const char* data, int dataSz, int type, int nid)
+{
+    if (attr) {
+        attr->value->value.asn1_string = wolfSSL_ASN1_STRING_new();
+        if (wolfSSL_ASN1_STRING_set(attr->value->value.asn1_string,
+                data, dataSz) != WOLFSSL_SUCCESS) {
+            wolfSSL_ASN1_STRING_free(attr->value->value.asn1_string);
+            WOLFSSL_MSG("wolfSSL_ASN1_STRING_set error");
+            return WOLFSSL_FAILURE;
+        }
+        attr->value->type = type;
+        attr->object->nid = nid;
+    }
+    else {
+        WOLFSSL_MSG("wolfSSL_X509_ATTRIBUTE_new error");
+        return WOLFSSL_FAILURE;
+    }
+
+    return WOLFSSL_SUCCESS;
+}
+
+
 int wolfSSL_X509_REQ_add1_attr_by_NID(WOLFSSL_X509 *req,
                                       int nid, int type,
                                       const unsigned char *bytes,
                                       int len)
 {
+    int ret;
+    WOLFSSL_X509_ATTRIBUTE* attr;
+
     WOLFSSL_ENTER("wolfSSL_X509_REQ_add1_attr_by_NID");
 
     if (!req || !bytes || type != MBSTRING_ASC) {
@@ -12281,25 +12306,6 @@ int wolfSSL_X509_REQ_add1_attr_by_NID(WOLFSSL_X509 *req,
             WOLFSSL_MSG("Challenge password too long");
             return WOLFSSL_FAILURE;
         }
-        if (req->challengePwAttr) {
-            wolfSSL_X509_ATTRIBUTE_free(req->challengePwAttr);
-        }
-        req->challengePwAttr = wolfSSL_X509_ATTRIBUTE_new();
-        if (req->challengePwAttr) {
-            req->challengePwAttr->value->value.asn1_string =
-                    wolfSSL_ASN1_STRING_new();
-            if (wolfSSL_ASN1_STRING_set(
-                    req->challengePwAttr->value->value.asn1_string,
-                    bytes, len) != WOLFSSL_SUCCESS) {
-                WOLFSSL_MSG("wolfSSL_ASN1_STRING_set error");
-                return WOLFSSL_FAILURE;
-            }
-            req->challengePwAttr->value->type = V_ASN1_PRINTABLESTRING;
-        }
-        else {
-            WOLFSSL_MSG("wolfSSL_X509_ATTRIBUTE_new error");
-            return WOLFSSL_FAILURE;
-        }
         break;
     case NID_serialNumber:
         if (len < 0)
@@ -12311,11 +12317,35 @@ int wolfSSL_X509_REQ_add1_attr_by_NID(WOLFSSL_X509 *req,
         XMEMCPY(req->serial, bytes, len);
         req->serialSz = len;
         break;
+
+    case NID_pkcs9_unstructuredName:
+    case NID_pkcs9_contentType:
+    case NID_surname:
+    case NID_initials:
+    case NID_givenName:
+    case NID_dnQualifier:
+        break;
+
     default:
         WOLFSSL_MSG("Unsupported attribute");
         return WOLFSSL_FAILURE;
     }
-    return WOLFSSL_SUCCESS;
+
+    attr = wolfSSL_X509_ATTRIBUTE_new();
+    ret = wolfSSL_X509_ATTRIBUTE_set(attr, (const char*)bytes, len,
+            V_ASN1_PRINTABLESTRING, nid);
+    if (ret != WOLFSSL_SUCCESS) {
+        wolfSSL_X509_ATTRIBUTE_free(attr);
+    }
+    else {
+        if (req->reqAttributes == NULL) {
+            req->reqAttributes = wolfSSL_sk_new_node(req->heap);
+            req->reqAttributes->type = STACK_TYPE_X509_REQ_ATTR;
+        }
+        ret = wolfSSL_sk_push(req->reqAttributes, attr);
+    }
+
+    return ret;
 }
 
 WOLFSSL_X509 *wolfSSL_X509_to_X509_REQ(WOLFSSL_X509 *x,
@@ -12355,6 +12385,20 @@ WOLFSSL_ASN1_TYPE *wolfSSL_X509_ATTRIBUTE_get0_type(
     return attr->value;
 }
 
+
+/**
+ * @param req X509_REQ containing attribute
+ * @return the number of attributes
+ */
+int wolfSSL_X509_REQ_get_attr_count(const WOLFSSL_X509 *req)
+{
+    if (req == NULL || req->reqAttributes == NULL)
+        return 0;
+
+    return wolfSSL_sk_num(req->reqAttributes);
+}
+
+
 /**
  * @param req X509_REQ containing attribute
  * @param loc NID of the attribute to return
@@ -12364,40 +12408,49 @@ WOLFSSL_X509_ATTRIBUTE *wolfSSL_X509_REQ_get_attr(
 {
     WOLFSSL_ENTER("wolfSSL_X509_REQ_get_attr");
 
-    if (!req) {
+    if (!req || req->reqAttributes == NULL) {
         WOLFSSL_MSG("Bad parameter");
         return NULL;
     }
 
-    switch (loc) {
-    case NID_pkcs9_challengePassword:
-        return req->challengePwAttr;
-    default:
-        WOLFSSL_MSG("Unsupported attribute");
-        return NULL;
-    }
+    return (WOLFSSL_X509_ATTRIBUTE*)wolfSSL_sk_value(req->reqAttributes, loc);
 }
 
 /* Return NID as the attr index */
 int wolfSSL_X509_REQ_get_attr_by_NID(const WOLFSSL_X509 *req,
         int nid, int lastpos)
 {
+    WOLFSSL_STACK* sk;
+    int idx;
+
     WOLFSSL_ENTER("wolfSSL_X509_REQ_get_attr_by_NID");
 
-    /* Since we only support 1 attr per attr type then a lastpos of >= 0
-     * indicates that one was already returned */
-    if (!req || lastpos >= 0) {
+    if (!req) {
         WOLFSSL_MSG("Bad parameter");
         return WOLFSSL_FATAL_ERROR;
     }
 
-    switch (nid) {
-    case NID_pkcs9_challengePassword:
-        return req->challengePwAttr ? nid : WOLFSSL_FATAL_ERROR;
-    default:
-        WOLFSSL_MSG("Unsupported attribute");
-        return WOLFSSL_FATAL_ERROR;
+    /* search through stack for first matching nid */
+    idx = lastpos + 1;
+    do {
+        sk = wolfSSL_sk_get_node(req->reqAttributes, idx);
+        if (sk != NULL) {
+            WOLFSSL_X509_ATTRIBUTE* attr;
+            attr = (WOLFSSL_X509_ATTRIBUTE*)sk->data.generic;
+            if (nid == attr->object->nid) {
+                /* found a match */
+                break;
+            }
+        }
+        idx++;
+    } while (sk != NULL);
+
+    /* no matches found */
+    if (sk == NULL) {
+        idx = WOLFSSL_FATAL_ERROR;
     }
+
+    return idx;
 }
 
 WOLFSSL_X509_ATTRIBUTE* wolfSSL_X509_ATTRIBUTE_new(void)

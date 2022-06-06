@@ -43,10 +43,12 @@ typedef e_tsip_err_t (*shaHmacFinalFn)
 
 /* ./ca-cert.der.sign,  */
 /* expect to have these variables defined at user application */
+#if defined(WOLFSSL_RENESAS_TSIP_TLS) && (WOLFSSL_RENESAS_TSIP_VER>=109)
+extern uint32_t     s_inst2[R_TSIP_SINST2_WORD_SIZE];
+#elif defined(WOLFSSL_RENESAS_TSIP_TLS) && (WOLFSSL_RENESAS_TSIP_VER>=106)
 extern uint32_t     s_flash[];
 extern uint32_t     s_inst1[R_TSIP_SINST_WORD_SIZE];
-extern uint32_t     s_inst2[R_TSIP_SINST2_WORD_SIZE];
-
+#endif
 
 wolfSSL_Mutex       tsip_mutex;
 static int          tsip_CryptHwMutexInit_ = 0;
@@ -267,7 +269,7 @@ int wc_tsip_EccVerify(
         int*  result,       void*  ctx)
 {
     int         ret = WOLFSSL_FAILURE;
-    uint8_t*    sigforSCE;
+    uint8_t*    sigforSCE = NULL;
     uint8_t*    pSig;
     const byte  rs_size = R_TSIP_ECDSA_DATA_BYTE_SIZE/2;
     byte        offset = 0x3;
@@ -405,7 +407,9 @@ WOLFSSL_API void tsip_set_callbacks(struct WOLFSSL_CTX* ctx)
     wolfSSL_CTX_SetRsaVerifyCb(ctx, (CallbackRsaVerify)Renesas_cmn_RsaVerify);
     wolfSSL_CTX_SetGenPreMasterCb(ctx, Renesas_cmn_generatePremasterSecret);
     wolfSSL_CTX_SetRsaEncCb(ctx, Renesas_cmn_RsaEnc);
+#if !defined(WOLFSSL_NO_TLS12) && !defined(WOLFSSL_AEAD_ONLY)
     wolfSSL_CTX_SetVerifyMacCb(ctx, (CallbackVerifyMac)Renesas_cmn_VerifyHmac);
+#endif /* !WOLFSSL_NO_TLS12 && !WOLFSSL_AEAD_ONLY */
     wolfSSL_CTX_SetEccSharedSecretCb(ctx, NULL);
     WOLFSSL_LEAVE("tsip_set_callbacks", 0);
 }
@@ -426,8 +430,9 @@ WOLFSSL_API int tsip_set_callback_ctx(struct WOLFSSL* ssl, void* user_ctx)
     wolfSSL_SetRsaVerifyCtx(ssl, user_ctx);
     wolfSSL_SetGenPreMasterCtx(ssl, user_ctx);
     wolfSSL_SetEccSharedSecretCtx(ssl, NULL);
+#if !defined(WOLFSSL_NO_TLS12) && !defined(WOLFSSL_AEAD_ONLY)    
     wolfSSL_SetVerifyMacCtx(ssl, user_ctx);
-
+#endif /* !WOLFSSL_NO_TLS12 && !WOLFSSL_AEAD_ONLY */
     /* set up crypt callback */
     wc_CryptoCb_CryptInitRenesasCmn(ssl, user_ctx);
     WOLFSSL_LEAVE("tsip_set_callback_ctx", 0);
@@ -557,18 +562,18 @@ int tsip_usable(const struct WOLFSSL *ssl, uint8_t session_key_generated)
     /* Check if TSIP can handle cipher suite */
     if (ret == WOLFSSL_SUCCESS) {
         if (
-            cipher0 == CIPHER_BYTE &&
+            (cipher0 == CIPHER_BYTE &&
             (cipher == l_TLS_RSA_WITH_AES_128_CBC_SHA ||
              cipher == l_TLS_RSA_WITH_AES_128_CBC_SHA256 ||
              cipher == l_TLS_RSA_WITH_AES_256_CBC_SHA ||
-             cipher == l_TLS_RSA_WITH_AES_256_CBC_SHA256)
+             cipher == l_TLS_RSA_WITH_AES_256_CBC_SHA256))
         #if (WOLFSSL_RENESAS_TSIP_VER >= TSIP109)
             ||
-            cipher0 == ECC_BYTE &&
+            (cipher0 == ECC_BYTE &&
             (cipher == l_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 ||
              cipher == l_TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 ||
              cipher == l_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 ||
-             cipher == l_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256)
+             cipher == l_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256))
         #endif
         ) {
             WOLFSSL_MSG("supported cipher suite");
@@ -1355,7 +1360,7 @@ int wc_tsip_tls_CertVerify(
         uint8_t*      tsip_encRsaKeyIndex)
 {
     int ret;
-    uint8_t *sigforSCE;
+    uint8_t *sigforSCE = NULL;
     uint8_t *pSig;
     const byte rs_size = 0x20;
     byte offset = 0x3;
@@ -1384,7 +1389,7 @@ int wc_tsip_tls_CertVerify(
             return MEMORY_E;
         }
         /* initialization */
-        XMEMCPY(sigforSCE, 0, R_TSIP_ECDSA_DATA_BYTE_SIZE);
+        XMEMSET(sigforSCE, 0, R_TSIP_ECDSA_DATA_BYTE_SIZE);
 
         if (signature[offset] == 0x20) {
             XMEMCPY(sigforSCE, &signature[offset+1], rs_size);
