@@ -109,6 +109,10 @@ static struct group_info group_id_to_text[] = {
     static int devId = INVALID_DEVID;
 #endif
 
+#ifdef HAVE_ARIA
+    #include "aria-crypt.h"
+#endif
+
 #define DEFAULT_TIMEOUT_SEC 2
 
 /* Note on using port 0: if the server uses port 0 to bind an ephemeral port

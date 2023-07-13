@@ -63,6 +63,10 @@
     static int devId = INVALID_DEVID;
 #endif
 
+#ifdef HAVE_ARIA
+    #include "aria-crypt.h"
+#endif
+
 #define SVR_COMMAND_SIZE 256
 
 static void SignalReady(void* args, word16 port)

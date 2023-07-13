@@ -68,6 +68,9 @@
     static int devId = INVALID_DEVID;
 #endif
 
+#ifdef HAVE_ARIA
+    #include "aria-crypt.h"
+#endif
 
 void echoclient_test(void* args)
 {

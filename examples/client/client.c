@@ -76,6 +76,10 @@ static const char *wolfsentry_config_path = NULL;
     static int devId = INVALID_DEVID;
 #endif
 
+#ifdef HAVE_ARIA
+    #include "aria-crypt.h"
+#endif
+
 #define DEFAULT_TIMEOUT_SEC 2
 #ifndef MAX_NON_BLOCK_SEC
 #define MAX_NON_BLOCK_SEC   10
