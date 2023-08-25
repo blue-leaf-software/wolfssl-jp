@@ -352,6 +352,15 @@ extern "C"
         **   2 SW     */
         ESP32_MODE mode;
 
+        /* a "unique" value used to identify a partial calculation result
+         * currently residing in the accelerator hardware. 0 when the hardware
+         * does not store a partial result for this hash. 0 also means either
+         * this is the first block (no calculation done yet) or, the partial
+         * result is in the hash's digest (e.g., wc_Sha::digest). Note: this
+         * wraps at std::numeric_limits<uint32_t>::max(), but never to zero. */
+        uint32_t calculation_token;
+
+
         /* see esp_rom/include/esp32/rom/sha.h
         **
         **  the Espressif type: SHA1, SHA256, etc.
@@ -359,7 +368,12 @@ extern "C"
 
         WC_ESP_SHA_TYPE sha_type;
 
-        /* we'll keep track of our own locks.
+        /* true iff this is an sha operation that can be accelerated when the
+         * context is initialized (i.e., a support sha_type and the accelerator
+         * is enabled. */
+        bool can_accelerate;
+
+      /* we'll keep track of our own locks.
         ** actual enable/disable only occurs for ref_counts[periph] == 0
         **
         **  see ref_counts[periph] in periph_ctrl.c */
@@ -368,19 +382,46 @@ extern "C"
         /* 0 (false) this is NOT first block.
         ** 1 (true ) this is first block.  */
         byte isfirstblock : 1; /* 1 bit only for true / false */
+
+        /*
+         * We need our own buffer for storing partial results if the sha
+         * calculation gets interleaved. We can't use the digest buffer
+         * in any wc_Sha* structure because that wouldn't be thread-safe. It isn't
+         * thread-safe because the partial result may be copied from the hardware
+         * at any time by any thread that wants to use the hardware accelerator.
+         * todo: this buffer probably isn't needed most of the time. perhaps
+         * it should be allocated on the heap as needed?
+         * */
+#define WC_SHA_MAX_DIGEST_SIZE 64
+        byte partial_result[WC_SHA_MAX_DIGEST_SIZE];
     } WC_ESP32SHA;
 
+/* exit codes to be used in esp32_sha.c. */
+/* TODO what numbers do we really want to use? */
+#define SHA_HW_INTERNAL_ERROR  (-106) /* hardware error, consider SW fallback  */
+#define SHA_HW_FALLBACK        (-108) /* signal to caller to fall back to SW   */
+
+  
+  int esp_sha_enable_hw_accelerator();
+  int esp_sha_disable_hw_accelerator();
+  int esp_sha_init_2(WC_ESP32SHA* ctx, enum wc_HashType hash_type);
+  int esp_sha_free_2(WC_ESP32SHA* ctx);
+  
     int esp_sha_init(WC_ESP32SHA* ctx, enum wc_HashType hash_type);
-    int esp_sha_init_ctx(WC_ESP32SHA* ctx);
     int esp_sha_try_hw_lock(WC_ESP32SHA* ctx);
     int esp_sha_hw_unlock(WC_ESP32SHA* ctx);
 
+#if !defined(NO_SHA)
     struct wc_Sha;
-    int esp_sha_ctx_copy(struct wc_Sha* src, struct wc_Sha* dst);
-    int esp_sha_digest_process(struct wc_Sha* sha, byte blockprocess);
-    int esp_sha_process(struct wc_Sha* sha, const byte* data);
+ //   int esp_sha_ctx_copy(struct wc_Sha* src, struct wc_Sha* dst);
+ //   int esp_sha_digest_process(struct wc_Sha* sha, byte blockprocess);
+ //   int esp_sha_process(struct wc_Sha* sha, const byte* data);
+  int esp_sha_ctx_copy_2(struct wc_Sha* src, struct wc_Sha* dst);
+  int esp_sha_digest_process_2(struct wc_Sha* sha, byte blockprocess);
+  int esp_sha_process_2(struct wc_Sha* sha, const byte* data);
+#endif
 
-    #ifndef NO_SHA256
+#ifndef NO_SHA256
     struct wc_Sha256;
     int esp_sha224_ctx_copy(struct wc_Sha256* src, struct wc_Sha256* dst);
     int esp_sha256_ctx_copy(struct wc_Sha256* src, struct wc_Sha256* dst);
@@ -390,7 +431,7 @@ extern "C"
 #endif
 
     /* TODO do we really call esp_sha512_process for WOLFSSL_SHA384 ? */
-    #if defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384)
+#if defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384)
     struct wc_Sha512;
     int esp_sha384_ctx_copy(struct wc_Sha512* src, struct wc_Sha512* dst);
     int esp_sha512_ctx_copy(struct wc_Sha512* src, struct wc_Sha512* dst);

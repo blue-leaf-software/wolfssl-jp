@@ -72,6 +72,11 @@ static const char* TAG = "wolf_hw_sha";
     static int this_block_num = 0;
 #endif
 
+int esp_sha_init_ctx(WC_ESP32SHA* ctx);
+int esp_sha_ctx_copy(struct wc_Sha* src, struct wc_Sha* dst);
+int esp_sha_digest_process(struct wc_Sha* sha, byte blockprocess);
+int esp_sha_process(struct wc_Sha* sha, const byte* data);
+
 /* esp_sha_init
 **
 **   ctx: any wolfSSL ctx from any hash algo
