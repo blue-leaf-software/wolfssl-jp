@@ -106,6 +106,7 @@ static void StashIntermediateResult();
 static int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx);
 static int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigest, size_t szDigest);
 static void PrintResult(const char* pchContext, int nReturnValue);
+static void PrintHex(const char* pchContext, const byte* pData, size_t szData);
 
 /*
  * Public functions. */
@@ -326,7 +327,7 @@ int esp_sha_digest_process_2(struct wc_Sha* sha, byte blockprocess)
     ESP_LOGV(TAG, "enter esp_sha_digest_process");
 
     if (blockprocess) {
-        //wc_esp_process_block(&sha->ctx, sha->buffer, WC_SHA_BLOCK_SIZE);
+      printf("Process another block\n");
       ret = HashBlock(sha->buffer, WC_SHA_BLOCK_SIZE, &sha->ctx);
       PrintResult("Process last block", ret);
     }
@@ -480,7 +481,7 @@ bool IsWorkingOn(WC_ESP32SHA* pContext)
   // Calculation from context in hardware? 
   uint32_t uContextToken = pContext->calculation_token;
   uint32_t uInProcessToken = HardwareContext.Context->calculation_token;
-  return uContextToken == uInProcessToken;
+  return uContextToken == uInProcessToken && uContextToken != CalculationToken_PartialNotInHardwre;
 }
 
 /* ClearWorkingOn
@@ -514,10 +515,11 @@ bool ContinueOrAvailable(WC_ESP32SHA* pContext)
  **/
 void StashIntermediateResult()
 {
-  assert(NULL == HardwareContext.Context);
+  assert(NULL != HardwareContext.Context);
   if (NULL != HardwareContext.Context)
   {
     sha_hal_read_digest(HardwareContext.Context->sha_type, HardwareContext.Context->partial_result);
+    PrintHex("Stashed", HardwareContext.Context->partial_result, sizeof(HardwareContext.Context->partial_result));
     HardwareContext.Context->calculation_token = CalculationToken_PartialNotInHardwre;
     HardwareContext.Context = NULL;
   }
@@ -532,8 +534,16 @@ void RestoreIntermediateResult(WC_ESP32SHA* ctx)
   assert(NULL == HardwareContext.Context);
   assert(ctx->can_accelerate);
   assert(CalculationToken_PartialNotInHardwre == ctx->calculation_token);
-  
-  sha_hal_write_digest(ctx->sha_type, ctx->partial_result);
+
+  if (!ctx->isfirstblock)
+  {
+    PrintHex("Restoring", ctx->partial_result, sizeof(ctx->partial_result));
+    sha_hal_write_digest(ctx->sha_type, ctx->partial_result);
+  }
+  else
+  {
+    printf("First block, no need to restore\n");
+  }
   
   ctx->calculation_token = GetNextCalculationToken();
   assert(CalculationToken_PartialNotInHardwre != ctx->calculation_token);
@@ -602,8 +612,8 @@ int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
   }
 
 #if SOC_SHA_SUPPORT_RESUME
-    sha_hal_wait_idle();
     Enter__ShaCriticalSection();
+    sha_hal_wait_idle();
     if (HardwareContext.Context == NULL)
     {
       SetAccelerationContext(ctx);
@@ -613,7 +623,13 @@ int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
       StashIntermediateResult();
       RestoreIntermediateResult(ctx);
     }
-    Leave__ShaCriticalSection();
+
+  if (!ctx->isfirstblock)
+  {
+    byte abyPrevious[WC_SHA_DIGEST_SIZE];
+    sha_hal_read_digest(ctx->sha_type, abyPrevious);
+    PrintHex("Last digest", abyPrevious, sizeof(abyPrevious));
+  }
 
   int nSwap = nBlockSize / sizeof(word32);
   word32 aTemp[nBlockSize / sizeof(word32)];
@@ -626,7 +642,8 @@ int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
   
     sha_hal_hash_block(ctx->sha_type, aTemp, nBlockSize / sizeof(word32), ctx->isfirstblock);
     ctx->isfirstblock = false;
-  
+     Leave__ShaCriticalSection();
+ 
     ret = SUCCESS;
 #else
     Enter__ShaCriticalSection();
@@ -738,6 +755,17 @@ static void PrintResult(const char* pchContext, int ret)
     printf("%s: error %d\n", pchContext, ret);
   }
 }
+
+static void PrintHex(const char* pchContext, const byte* pData, size_t szData)
+{
+  printf("%s - ", pchContext);
+  while (szData--)
+  {
+    printf("%02X-", *pData++);
+  }
+  printf("\n");
+}
+
 
 #endif /* WOLFSSL_ESP32_CRYPT */
 #endif /* !defined(NO_SHA) ||... */
