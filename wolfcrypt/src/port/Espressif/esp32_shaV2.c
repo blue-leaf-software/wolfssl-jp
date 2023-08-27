@@ -66,8 +66,17 @@ struct CalculationContext
     uint32_t NextToken;
 };
 
-//#undef  SOC_SHA_SUPPORT_RESUME
 
+/* Locally undefine
+ * SOC_SHA_SUPPORT_RESUME : to test hashing without session resumption
+ *                          even on micros that support it.
+ * SINGLE_THREADED : for single threading support (useful for printing
+ *                   diagnostic messages from within critical sections). 
+ **/
+//#undef  SOC_SHA_SUPPORT_RESUME
+//#define  SINGLE_THREADED
+
+/* So we never have to return magic numbers! */
 #define SUCCESS (0)
 
 /*
@@ -86,9 +95,10 @@ static struct CalculationContext HardwareContext = { NULL, 1 };
  * the harware. */
 const uint32_t CalculationToken_PartialNotInHardwre = 0;
 
-/* If not single threaded, protect local fields with a critical section */
+/* If protect fields that could be accessed by multiple threads with a
+ * critical section. This includes fields in WC_ESP32SHA. */
 #if !defined(SINGLE_THREADED)
-    static portMUX_TYPE sha_crit_sect = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE sha_crit_sect = portMUX_INITIALIZER_UNLOCKED;
 #endif
 
 /*
@@ -103,8 +113,10 @@ static bool IsWorkingOn(WC_ESP32SHA* pContext);
 static void ClearWorkingOn();
 static void StashIntermediateResult();
 
+static void FlipEndian(const word32* pSource, word32* pDestination, size_t szData);
 static int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx);
 static int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigest, size_t szDigest);
+static int HashAndGetDigest(const word32* pData, size_t szData, word32* pDigest, size_t szDigest, WC_ESP32SHA* pContext);
 static void PrintResult(const char* pchContext, int nReturnValue);
 static void PrintHex(const char* pchContext, const byte* pData, size_t szData);
 
@@ -116,26 +128,29 @@ static void PrintHex(const char* pchContext, const byte* pData, size_t szData);
  * exactly the same number of times.
  *
  * Returns:
- *  0 for succes.
- *  -1 if hardware acceleration is not supported.
+ *  SUCCESS for succes.
+ *  SHA_HW_FALLBACK : if hardware acceleration is not supported.
  * */
 int esp_sha_enable_hw_accelerator()
 {
-  bool bLock; 
-  Enter__ShaCriticalSection();
-  {
-    bLock = 0 == EnableCount;
-    ++EnableCount;
-  }
-  Leave__ShaCriticalSection();
+    int ret = SUCCESS;
+    bool bLock; 
+    Enter__ShaCriticalSection();
+    {
+      bLock = 0 == EnableCount;
+      ++EnableCount;
+    }
+    Leave__ShaCriticalSection();
 
-  if (bLock)
-  {
-    periph_module_enable(PERIPH_SHA_MODULE);
-    esp_crypto_sha_aes_lock_acquire();
-  }
-  
-  return 0;
+    if (bLock)
+    {
+      // can't call inside critical section.
+      periph_module_enable(PERIPH_SHA_MODULE);
+      esp_crypto_sha_aes_lock_acquire();
+    }
+
+    assert(SUCCESS == ret || SHA_HW_FALLBACK == ret);
+    return ret;
 }
 
 /* esp_sha_enable_hw_accelerator
@@ -148,24 +163,27 @@ int esp_sha_enable_hw_accelerator()
  * */
 int esp_sha_disable_hw_accelerator()
 {
-  bool bUnlock;
-  Enter__ShaCriticalSection();
+    int ret = SUCCESS;
+    bool bUnlock;
+    Enter__ShaCriticalSection();
+  
+    // Too many disables? 
+    assert(EnableCount > 0);
+  
+    --EnableCount;
+    bUnlock  = 0 == EnableCount;
+  
+    Leave__ShaCriticalSection();
+  
+    if (bUnlock)
+    {
+      // can't call inside critical section.
+      esp_crypto_sha_aes_lock_release();
+      periph_module_disable(PERIPH_SHA_MODULE);
+    }
 
-  // Too many disables? 
-  assert(EnableCount > 0);
-
-  --EnableCount;
-  bUnlock  = 0 == EnableCount;
-
-  Leave__ShaCriticalSection();
-
-  if (bUnlock)
-  {
-    esp_crypto_sha_aes_lock_release();
-    periph_module_disable(PERIPH_SHA_MODULE);
-  }
-
-  return 0;
+    assert(SUCCESS == ret || SHA_HW_FALLBACK == ret);
+    return ret;
 }
 
 /* esp_sha_init
@@ -308,9 +326,6 @@ int esp_sha_process_2(struct wc_Sha* sha, const byte* data)
     static_assert(sizeof(HardwareContext.Context->partial_result) >= WC_SHA_DIGEST_SIZE, "partial result buffer too small");
   
     ret = HashBlock((const word32*)data, WC_SHA_BLOCK_SIZE, &sha->ctx);
-    PrintResult("Process block", ret);
-  
-    //wc_esp_process_block(&sha->ctx, (const word32*)data, WC_SHA_BLOCK_SIZE);
 
     ESP_LOGV(TAG, "leave esp_sha_process");
 
@@ -325,18 +340,9 @@ int esp_sha_digest_process_2(struct wc_Sha* sha, byte blockprocess)
     int ret = SUCCESS;
 
     ESP_LOGV(TAG, "enter esp_sha_digest_process");
+    static_assert(sizeof(HardwareContext.Context->partial_result) >= WC_SHA_DIGEST_SIZE, "partial result buffer too small");
 
-    if (blockprocess) {
-      printf("Process another block\n");
-      ret = HashBlock(sha->buffer, WC_SHA_BLOCK_SIZE, &sha->ctx);
-      PrintResult("Process last block", ret);
-    }
-
-    if (SUCCESS == ret)
-    {
-        ret = RetrieveDigest(&sha->ctx, sha->digest, WC_SHA_DIGEST_SIZE);
-        PrintResult("Retrieve digest", ret);
-    }
+    ret = HashAndGetDigest(blockprocess ? sha->buffer : NULL, WC_SHA_BLOCK_SIZE, sha->digest, WC_SHA_DIGEST_SIZE, &sha->ctx);
 
     ESP_LOGV(TAG, "leave esp_sha_digest_process");
 
@@ -344,28 +350,22 @@ int esp_sha_digest_process_2(struct wc_Sha* sha, byte blockprocess)
 } /* esp_sha_digest_process */
 #endif /* NO_SHA */
 
-
 /*
  * Private functions. */
 
 void Enter__ShaCriticalSection()
 {
 #if !defined(SINGLE_THREADED)
-    //taskENTER_CRITICAL(&sha_crit_sect);
+    taskENTER_CRITICAL(&sha_crit_sect);
 #endif
 }
 
 void Leave__ShaCriticalSection()
 {
 #if !defined(SINGLE_THREADED)
-    //taskEXIT_CRITICAL(&sha_crit_sect);
+    taskEXIT_CRITICAL(&sha_crit_sect);
 #endif
 }
-
-#if defined(DEBUG_WOLFSSL)
-    /* Only when debugging, we'll keep tracking of block numbers. */
-    static int this_block_num = 0;
-#endif
 
 /* MapHashType
  * Translates WolfSSL hash type enumeration to Espressif hash type enumeration.
@@ -373,27 +373,35 @@ void Leave__ShaCriticalSection()
 WC_ESP_SHA_TYPE MapHashType(enum wc_HashType hash_type)
 {
     switch (hash_type) { /* check each wolfSSL hash type WC_[n] */
+#if !defined(NO_SHA)
         case WC_HASH_TYPE_SHA:
-            return SHA1; /* assign Espressif SHA HW type */
+            return SHA1;
+#endif
 
+#if !defined(NO_SHA256)
         case WC_HASH_TYPE_SHA256:
-            return SHA2_256; /* assign Espressif SHA HW type */
+            return SHA2_256;
+#endif
 
+#if defined(WC_SHA384)
         case  WC_HASH_TYPE_SHA384:
-            return SHA2_384; /* Espressif type, but we won't use HW */
+            return SHA2_384;
+#endif
 
+#if defined(WC_SHA512)
         case WC_HASH_TYPE_SHA512:
-            return SHA2_512; /* assign Espressif SHA HW type */
+            return SHA2_512;
+#endif
 
-    #ifndef WOLFSSL_NOSHA512_224
+#ifndef WOLFSSL_NOSHA512_224
         case WC_HASH_TYPE_SHA512_224:
-            return SHA2_512; /* Espressif type, but we won't use HW */
-    #endif
+            return SHA2_512;
+#endif
 
-    #ifndef WOLFSSL_NOSHA512_256
+#ifndef WOLFSSL_NOSHA512_256
         case WC_HASH_TYPE_SHA512_256:
-            return SHA2_512; /* Espressif type, but we won't use HW */
-    #endif
+            return SHA2_512;
+#endif
 
         default:
              return SHA_TYPE_MAX;
@@ -405,23 +413,42 @@ WC_ESP_SHA_TYPE MapHashType(enum wc_HashType hash_type)
 bool CanAccelerate(WC_ESP_SHA_TYPE type)
 {
     switch (type) {
-    case SHA1:
-      return SOC_SHA_SUPPORT_SHA1 ? true : false;
+#if !defined(NO_SHA)
+        case SHA1:
+          return SOC_SHA_SUPPORT_SHA1 ? true : false;
+#endif
+
     case SHA2_224:
-      return SOC_SHA_SUPPORT_SHA224 ? true : false; 
-    case SHA2_256:
-        return SOC_SHA_SUPPORT_SHA256 ? true : false;
-    case SHA2_384:
-        return SOC_SHA_SUPPORT_SHA384 ? true : false;
-    case SHA2_512:
-        return SOC_SHA_SUPPORT_SHA512 ? true : false;
-    case SHA2_512224:
-    case SHA2_512256:
-    case SHA2_512T:
-        return SOC_SHA_SUPPORT_SHA512_T ? true : false;
-    case SHA_TYPE_MAX:
-    default:
-        return false;
+          return SOC_SHA_SUPPORT_SHA224 ? true : false;
+
+#if !defined(NO_SHA256)
+        case SHA2_256:
+            return SOC_SHA_SUPPORT_SHA256 ? true : false;
+#endif
+
+#if defined(WC_SHA384)
+        case SHA2_384:
+            return SOC_SHA_SUPPORT_SHA384 ? true : false;
+#endif
+
+#if defined(WC_SHA512)
+        case SHA2_512:
+            return SOC_SHA_SUPPORT_SHA512 ? true : false;
+#endif
+
+#ifndef WOLFSSL_NOSHA512_224
+        case SHA2_512224:
+            return SOC_SHA_SUPPORT_SHA512_T ? true : false;
+#endif
+
+#ifndef WOLFSSL_NOSHA512_256
+        case SHA2_512256:
+        case SHA2_512T:
+            return SOC_SHA_SUPPORT_SHA512_T ? true : false;
+#endif
+        case SHA_TYPE_MAX:
+        default:
+            return false;
     }
 }
 
@@ -519,7 +546,6 @@ void StashIntermediateResult()
   if (NULL != HardwareContext.Context)
   {
     sha_hal_read_digest(HardwareContext.Context->sha_type, HardwareContext.Context->partial_result);
-    PrintHex("Stashed", HardwareContext.Context->partial_result, sizeof(HardwareContext.Context->partial_result));
     HardwareContext.Context->calculation_token = CalculationToken_PartialNotInHardwre;
     HardwareContext.Context = NULL;
   }
@@ -537,12 +563,8 @@ void RestoreIntermediateResult(WC_ESP32SHA* ctx)
 
   if (!ctx->isfirstblock)
   {
-    PrintHex("Restoring", ctx->partial_result, sizeof(ctx->partial_result));
-    sha_hal_write_digest(ctx->sha_type, ctx->partial_result);
-  }
-  else
-  {
-    printf("First block, no need to restore\n");
+      // no history from first block, so only subsequent ones need to be loaded. 
+      sha_hal_write_digest(ctx->sha_type, ctx->partial_result);
   }
   
   ctx->calculation_token = GetNextCalculationToken();
@@ -571,6 +593,25 @@ void SetAccelerationContext(WC_ESP32SHA* pContext)
   }
 }
 
+/* FlipEndian
+ *
+ * Swaps byte order for words in pSource, writing filped bytes into
+ * pDestination. pSource and pDestination may point to the same memory
+ * location.
+ * pSource: data to be flipped
+ * pDestination: output buffer (may be same as pSource)
+ * szData: number of _bytes_ to reorder. 
+ **/
+void FlipEndian(const word32* pSource, word32* pDestination, size_t szData)
+{
+    int nSwap = szData / sizeof(word32);
+    while (nSwap--)
+    {
+        word32 Temp = __builtin_bswap32(*pSource++);
+        *pDestination++ = Temp;
+    }
+}
+
 /*
  * HashBlock
  *
@@ -597,80 +638,125 @@ void SetAccelerationContext(WC_ESP32SHA* pContext)
  **/
 int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
 {
-  int ret = SHA_HW_FALLBACK;
-  assert(NULL != pData);
-  assert(NULL != ctx);
+    int ret = SHA_HW_FALLBACK;
+    assert(NULL != pData);
+    assert(NULL != ctx);
+   
+    if (NULL == pData || NULL == ctx)
+    {
+      return BAD_FUNC_ARG;
+    }
+   
+    if (!ctx->can_accelerate)
+    {
+      return SHA_HW_FALLBACK;
+    }
 
-  if (NULL == pData || NULL == ctx)
+#if SOC_SHA_SUPPORT_RESUME
+    Enter__ShaCriticalSection();
+    {
+        sha_hal_wait_idle();
+        if (HardwareContext.Context == NULL)
+        {
+          SetAccelerationContext(ctx);
+        }
+        else if (!IsWorkingOn(ctx))
+        {
+          StashIntermediateResult();
+          RestoreIntermediateResult(ctx);
+        }
+   
+        word32 aTemp[nBlockSize / sizeof(word32)];
+        FlipEndian(pData, aTemp, nBlockSize);
+   
+        sha_hal_hash_block(ctx->sha_type, aTemp, nBlockSize / sizeof(word32), ctx->isfirstblock);
+        ctx->isfirstblock = false;
+    }
+    Leave__ShaCriticalSection();
+
+    ret = SUCCESS;
+  
+    return ret;
+#else
+    Enter__ShaCriticalSection();
+    {
+        bool bCanAccelerate = ContinueOrAvailable(ctx);
+        if (bCanAccelerate && HardwareContext.Context != ctx)
+        {
+            assert(NULL == HardwareContext.Context);
+            assert(ctx->isfirstblock);
+            SetAccelerationContext(ctx);
+        }
+
+        if (bCanAccelerate)
+        {
+            word32 aTemp[nBlockSize / sizeof(word32)];
+            FlipEndian(pData, aTemp, nBlockSize);
+   
+            sha_hal_hash_block(ctx->sha_type, aTemp, nBlockSize / sizeof(word32), ctx->isfirstblock);
+            ctx->isfirstblock = false;
+            ret = SUCCESS;
+        }
+        else
+        {
+            ret = SHA_HW_FALLBACK;
+        }
+    }
+    Leave__ShaCriticalSection();
+    return ret;
+#endif
+}
+
+/* HashAndGetDigest
+ *
+ * Optionally hash a block of data and retrieve the hash of this block and all
+ * previous blocks.
+ * pData, szData: data & its length (in bytes) to hash before returning the digest 
+ *                if not NULL,
+ * pDigest, szDigest: destination for the digest.
+ * pContext: accelerator context for the hash.
+ *
+ * Returns:
+ *   SUCCESS : if the hash is completed successfully.
+ *   SHA_HW_FALLBACK : if the hash could not be completed with the hardware and
+ *          must be performed in software.
+ *   BAD_FUNC_ARG : if pDigest or pContext are null or szDigest is 0. 
+ **/
+int HashAndGetDigest(const word32* pData, size_t szData, word32* pDigest, size_t szDigest, WC_ESP32SHA* pContext)
+{
+  int ret = SUCCESS;
+
+  if (NULL == pDigest || NULL == pContext || 0 == szDigest)
   {
     return BAD_FUNC_ARG;
   }
 
-  if (!ctx->can_accelerate)
+  if (NULL != pData)
   {
-    return SHA_HW_FALLBACK;
+    ret = HashBlock(pData, szData, pContext);
   }
 
-#if SOC_SHA_SUPPORT_RESUME
-    Enter__ShaCriticalSection();
-    sha_hal_wait_idle();
-    if (HardwareContext.Context == NULL)
-    {
-      SetAccelerationContext(ctx);
-    }
-    else if (!IsWorkingOn(ctx))
-    {
-      StashIntermediateResult();
-      RestoreIntermediateResult(ctx);
-    }
-
-  if (!ctx->isfirstblock)
+  if (SUCCESS == ret)
   {
-    byte abyPrevious[WC_SHA_DIGEST_SIZE];
-    sha_hal_read_digest(ctx->sha_type, abyPrevious);
-    PrintHex("Last digest", abyPrevious, sizeof(abyPrevious));
+    ret = RetrieveDigest(pContext, pDigest, szDigest);
   }
 
-  int nSwap = nBlockSize / sizeof(word32);
-  word32 aTemp[nBlockSize / sizeof(word32)];
-  const word32 *pSource = pData;
-  word32 *pDestination = aTemp;
-  while (nSwap--)
-  {
-    *pDestination++ = __builtin_bswap32(*pSource++);
-  }
-  
-    sha_hal_hash_block(ctx->sha_type, aTemp, nBlockSize / sizeof(word32), ctx->isfirstblock);
-    ctx->isfirstblock = false;
-     Leave__ShaCriticalSection();
- 
-    ret = SUCCESS;
-#else
-    Enter__ShaCriticalSection();
-    bool bCanAccelerate = ContinueOrAvailable(ctx);
-    if (bCanAccelerate && HardwareContext.Context != ctx)
-    {
-      assert(NULL == HardwareContext.Context);
-      assert(ctx->isfirstblock);
-      SetAccelerationContext(ctx);
-    }
-    Leave__ShaCriticalSection();
-    
-    if (bCanAccelerate)
-    {
-      sha_hal_hash_block(ctx->sha_type, pData, nBlockSize / sizeof(word32), ctx->isfirstblock);
-      ctx->isfirstblock = false;
-      ret = SUCCESS;
-    }
-    else
-    {
-      ret = SHA_HW_FALLBACK;
-    }
-#endif
-
+  assert(SUCCESS == ret || SHA_HW_FALLBACK == ret || BAD_FUNC_ARG == ret);
   return ret;
 }
 
+/* RetrieveDigest
+ *
+ * Retrieves the hash digest for the context provided. The digets may come
+ * from hardware registers or prior stashed result (if another sha calculation
+ * required the hardware in between times).
+ *
+ * Returns:
+ *   SUCCESS : if the digest is retrieved successfully.
+ *   SHA_HW_FALLBACK : if the hash could not be retrieved with the hardware and
+ *          must be performed in software.
+ *   BAD_FUNC_ARG : if pDigest or pContext are null or szDigest is 0. 
+ **/
 int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigestStore, size_t szDigest)
 {
   assert(NULL != ctx);
@@ -692,25 +778,16 @@ int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigestStore, size_t szDigest)
   {
     if (IsWorkingOn(ctx))
     {
-      printf("Working on\n");
-      sha_hal_wait_idle();
-      sha_hal_read_digest(ctx->sha_type, pDigestStore);
+        sha_hal_wait_idle();
+        sha_hal_read_digest(ctx->sha_type, pDigestStore);
     }
     else
     {
-      printf("From cache\n");
-
-      assert(CalculationToken_PartialNotInHardwre == ctx->calculation_token);
-      memcpy(pDigestStore, ctx->partial_result, szDigest);
+        assert(CalculationToken_PartialNotInHardwre == ctx->calculation_token);
+        memcpy(pDigestStore, ctx->partial_result, szDigest);
     }
 
-    int nSwap = szDigest / sizeof(word32);
-    word32* pSwap = pDigestStore;
-    while (nSwap--)
-    {
-      word32 Temp = __builtin_bswap32(*pSwap);
-      *pSwap++ = Temp;
-    }
+    FlipEndian(pDigestStore, pDigestStore, szDigest);
 
   }
   Leave__ShaCriticalSection();
@@ -725,8 +802,9 @@ int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigestStore, size_t szDigest)
     assert(IsWorkingOn(ctx));
     if (IsWorkingOn(ctx))
     {
-      sha_hal_wait_idle();
-      sha_hal_read_digest(ctx->sha_type, pDigestStore);
+        sha_hal_wait_idle();
+        sha_hal_read_digest(ctx->sha_type, pDigestStore);
+        FlipEndian(pDigestStore, pDigestStore, szDigest);
     }
     else
     {
@@ -769,3 +847,5 @@ static void PrintHex(const char* pchContext, const byte* pData, size_t szData)
 
 #endif /* WOLFSSL_ESP32_CRYPT */
 #endif /* !defined(NO_SHA) ||... */
+
+
