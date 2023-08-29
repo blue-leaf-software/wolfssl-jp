@@ -417,8 +417,8 @@ extern "C"
  //   int esp_sha_digest_process(struct wc_Sha* sha, byte blockprocess);
  //   int esp_sha_process(struct wc_Sha* sha, const byte* data);
   int esp_sha_ctx_copy_2(struct wc_Sha* src, struct wc_Sha* dst);
-  int esp_sha_digest_process_2(struct wc_Sha* sha, byte blockprocess);
   int esp_sha_process_2(struct wc_Sha* sha, const byte* data);
+  int esp_sha_finish_digest_2(struct wc_Sha* sha, byte blockprocess);
 #endif
 
 #ifndef NO_SHA256

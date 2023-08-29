@@ -67,11 +67,11 @@ struct CalculationContext
 };
 
 
-/* Locally undefine
- * SOC_SHA_SUPPORT_RESUME : to test hashing without session resumption
- *                          even on micros that support it.
- * SINGLE_THREADED : for single threading support (useful for printing
- *                   diagnostic messages from within critical sections). 
+/* Locally 
+ * undefine SOC_SHA_SUPPORT_RESUME : to test hashing without session resumption
+ *                                   even on micros that support it.
+ * define SINGLE_THREADED : for single threading support (useful for printing
+ *                          diagnostic messages from within critical sections). 
  **/
 //#undef  SOC_SHA_SUPPORT_RESUME
 //#define  SINGLE_THREADED
@@ -116,7 +116,7 @@ static void StashIntermediateResult();
 static void FlipEndian(const word32* pSource, word32* pDestination, size_t szData);
 static int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx);
 static int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigest, size_t szDigest);
-static int HashAndGetDigest(const word32* pData, size_t szData, word32* pDigest, size_t szDigest, WC_ESP32SHA* pContext);
+static int HashAndFinishDigest(const word32* pData, size_t szData, word32* pDigest, size_t szDigest, WC_ESP32SHA* pContext);
 static void PrintResult(const char* pchContext, int nReturnValue);
 static void PrintHex(const char* pchContext, const byte* pData, size_t szData);
 
@@ -284,6 +284,7 @@ int esp_sha_ctx_copy_2(struct wc_Sha* src, struct wc_Sha* dst)
   }
   Leave__ShaCriticalSection();
 
+  assert(HardwareContext.Context == NULL || HardwareContext.Context->calculation_token != CalculationToken_PartialNotInHardwre);
 #else
 
   WC_ESP32SHA* pSource = &src->ctx;
@@ -335,14 +336,14 @@ int esp_sha_process_2(struct wc_Sha* sha, const byte* data)
 /*
 ** retrieve sha1 digest
 */
-int esp_sha_digest_process_2(struct wc_Sha* sha, byte blockprocess)
+int esp_sha_finish_digest_2(struct wc_Sha* sha, byte blockprocess)
 {
     int ret = SUCCESS;
 
     ESP_LOGV(TAG, "enter esp_sha_digest_process");
     static_assert(sizeof(HardwareContext.Context->partial_result) >= WC_SHA_DIGEST_SIZE, "partial result buffer too small");
 
-    ret = HashAndGetDigest(blockprocess ? sha->buffer : NULL, WC_SHA_BLOCK_SIZE, sha->digest, WC_SHA_DIGEST_SIZE, &sha->ctx);
+    ret = HashAndFinishDigest(blockprocess ? sha->buffer : NULL, WC_SHA_BLOCK_SIZE, sha->digest, WC_SHA_DIGEST_SIZE, &sha->ctx);
 
     ESP_LOGV(TAG, "leave esp_sha_digest_process");
 
@@ -508,6 +509,7 @@ bool IsWorkingOn(WC_ESP32SHA* pContext)
   // Calculation from context in hardware? 
   uint32_t uContextToken = pContext->calculation_token;
   uint32_t uInProcessToken = HardwareContext.Context->calculation_token;
+  assert(uInProcessToken != CalculationToken_PartialNotInHardwre);
   return uContextToken == uInProcessToken && uContextToken != CalculationToken_PartialNotInHardwre;
 }
 
@@ -658,24 +660,25 @@ int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
         sha_hal_wait_idle();
         if (HardwareContext.Context == NULL)
         {
-          SetAccelerationContext(ctx);
+          RestoreIntermediateResult(ctx);
         }
         else if (!IsWorkingOn(ctx))
         {
           StashIntermediateResult();
           RestoreIntermediateResult(ctx);
         }
-   
+
         word32 aTemp[nBlockSize / sizeof(word32)];
         FlipEndian(pData, aTemp, nBlockSize);
-   
+
         sha_hal_hash_block(ctx->sha_type, aTemp, nBlockSize / sizeof(word32), ctx->isfirstblock);
         ctx->isfirstblock = false;
     }
     Leave__ShaCriticalSection();
 
     ret = SUCCESS;
-  
+
+    assert(HardwareContext.Context == NULL || HardwareContext.Context->calculation_token != CalculationToken_PartialNotInHardwre);
     return ret;
 #else
     Enter__ShaCriticalSection();
@@ -707,10 +710,10 @@ int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
 #endif
 }
 
-/* HashAndGetDigest
+/* HashAndFinishDigest
  *
  * Optionally hash a block of data and retrieve the hash of this block and all
- * previous blocks.
+ * previous blocks. Completes digest by clearing hardware context. 
  * pData, szData: data & its length (in bytes) to hash before returning the digest 
  *                if not NULL,
  * pDigest, szDigest: destination for the digest.
@@ -722,7 +725,7 @@ int HashBlock(const word32* pData, int nBlockSize, WC_ESP32SHA* ctx)
  *          must be performed in software.
  *   BAD_FUNC_ARG : if pDigest or pContext are null or szDigest is 0. 
  **/
-int HashAndGetDigest(const word32* pData, size_t szData, word32* pDigest, size_t szDigest, WC_ESP32SHA* pContext)
+int HashAndFinishDigest(const word32* pData, size_t szData, word32* pDigest, size_t szDigest, WC_ESP32SHA* pContext)
 {
   int ret = SUCCESS;
 
@@ -740,6 +743,11 @@ int HashAndGetDigest(const word32* pData, size_t szData, word32* pDigest, size_t
   {
     ret = RetrieveDigest(pContext, pDigest, szDigest);
   }
+
+  // This is needed because callers reinitialize the sha context so we need to
+  // make sure we aren't in the accelerator still. Removing this would allow
+  // intermediate hash results to be retrieved, but that isn't needed.
+  esp_sha_free_2(pContext);
 
   assert(SUCCESS == ret || SHA_HW_FALLBACK == ret || BAD_FUNC_ARG == ret);
   return ret;
@@ -792,6 +800,7 @@ int RetrieveDigest(WC_ESP32SHA* ctx, word32* pDigestStore, size_t szDigest)
   }
   Leave__ShaCriticalSection();
 
+  assert(HardwareContext.Context == NULL || HardwareContext.Context->calculation_token != CalculationToken_PartialNotInHardwre);
   return SUCCESS;
 #else
 

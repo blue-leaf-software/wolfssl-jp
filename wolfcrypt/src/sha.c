@@ -822,7 +822,7 @@ int wc_ShaFinal(wc_Sha* sha, byte* hash)
 #endif
 
 #if defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW)
-    ret = esp_sha_digest_process_2(sha, 1);
+    ret = esp_sha_finish_digest_2(sha, 1);
     if (SHA_HW_FALLBACK == ret)
     {
         ret = XTRANSFORM(sha, (const byte*)local);
