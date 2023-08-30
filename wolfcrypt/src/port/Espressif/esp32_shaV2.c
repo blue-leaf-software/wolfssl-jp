@@ -38,7 +38,9 @@
    !defined(NO_WOLFSSL_ESP32_CRYPT_HASH)
 
 #include <hal/sha_hal.h>
+#if !defined(CONFIG_IDF_TARGET_ESP32)
 #include <esp_crypto_lock.h>
+#endif
 
 #include <wolfssl/wolfcrypt/sha.h>
 #include <wolfssl/wolfcrypt/sha256.h>
@@ -78,6 +80,11 @@ struct CalculationContext
 
 /* So we never have to return magic numbers! */
 #define SUCCESS (0)
+
+#if !defined(CONFIG_IDF_TARGET_ESP32)
+#define SHA_INVALID SHA_TYPE_MAX
+#endif
+
 
 /*
  * Local static variables.
@@ -146,7 +153,9 @@ int esp_sha_enable_hw_accelerator()
     {
       // can't call inside critical section.
       periph_module_enable(PERIPH_SHA_MODULE);
+#if !defined(CONFIG_IDF_TARGET_ESP32)
       esp_crypto_sha_aes_lock_acquire();
+#endif
     }
 
     assert(SUCCESS == ret || SHA_HW_FALLBACK == ret);
@@ -178,7 +187,9 @@ int esp_sha_disable_hw_accelerator()
     if (bUnlock)
     {
       // can't call inside critical section.
+#if !defined(CONFIG_IDF_TARGET_ESP32)
       esp_crypto_sha_aes_lock_release();
+#endif
       periph_module_disable(PERIPH_SHA_MODULE);
     }
 
@@ -203,7 +214,7 @@ int esp_sha_init_2(WC_ESP32SHA* ctx, enum wc_HashType hash_type)
   int ret = 0;
 
   ctx->sha_type = MapHashType(hash_type);
-  if (SHA_TYPE_MAX == ctx->sha_type)
+  if (SHA_INVALID == ctx->sha_type)
   {
     ESP_LOGW(TAG, "Unexpected hash_type in esp_sha_init");
   }
@@ -405,7 +416,7 @@ WC_ESP_SHA_TYPE MapHashType(enum wc_HashType hash_type)
 #endif
 
         default:
-             return SHA_TYPE_MAX;
+             return SHA_INVALID;
     }
 }
 
@@ -414,43 +425,47 @@ WC_ESP_SHA_TYPE MapHashType(enum wc_HashType hash_type)
 bool CanAccelerate(WC_ESP_SHA_TYPE type)
 {
     switch (type) {
-#if !defined(NO_SHA)
+#if SOC_SHA_SUPPORT_SHA1 && !defined(NO_SHA)
         case SHA1:
-          return SOC_SHA_SUPPORT_SHA1 ? true : false;
+          return true;
 #endif
 
+#if SOC_SHA_SUPPORT_SHA224
     case SHA2_224:
-          return SOC_SHA_SUPPORT_SHA224 ? true : false;
+          return true;
+#endif
 
-#if !defined(NO_SHA256)
+#if SOC_SHA_SUPPORT_SHA256 && !defined(NO_SHA256)
         case SHA2_256:
-            return SOC_SHA_SUPPORT_SHA256 ? true : false;
+            return true;
 #endif
 
-#if defined(WC_SHA384)
+#if SOC_SHA_SUPPORT_SHA384 && defined(WC_SHA384)
         case SHA2_384:
-            return SOC_SHA_SUPPORT_SHA384 ? true : false;
+            return true;
 #endif
 
-#if defined(WC_SHA512)
+#if SOC_SHA_SUPPORT_SHA512 && defined(WC_SHA512)
         case SHA2_512:
-            return SOC_SHA_SUPPORT_SHA512 ? true : false;
+            return true;
 #endif
 
-#ifndef WOLFSSL_NOSHA512_224
+#if SOC_SHA_SUPPORT_SHA512_T && defined(WOLFSSL_NOSHA512_224)
         case SHA2_512224:
-            return SOC_SHA_SUPPORT_SHA512_T ? true : false;
+            return true;
 #endif
 
-#ifndef WOLFSSL_NOSHA512_256
+#if SOC_SHA_SUPPORT_SHA512_T && defined(WOLFSSL_NOSHA512_256)
         case SHA2_512256:
         case SHA2_512T:
-            return SOC_SHA_SUPPORT_SHA512_T ? true : false;
+            return true;
 #endif
-        case SHA_TYPE_MAX:
+        case SHA_INVALID:
         default:
             return false;
     }
+
+    return false;
 }
 
 /* esp_sha_init_ctx
@@ -458,7 +473,7 @@ bool CanAccelerate(WC_ESP_SHA_TYPE type)
 static void esp_sha_init_ctx(WC_ESP32SHA* ctx)
 {
   // Must have a valid sha type at this point.
-  assert(ctx->sha_type < SHA_TYPE_MAX);
+  assert(ctx->sha_type != SHA_INVALID);
   assert(CanAccelerate(ctx->sha_type));
 
   memset(ctx->partial_result, 0, sizeof(ctx->partial_result));
@@ -557,6 +572,7 @@ void StashIntermediateResult()
  *
  * Restore a partial result from a previously stashed calculation so the hash can be resumed. 
  **/
+#if defined(SOC_SHA_SUPPORT_RESUME)
 void RestoreIntermediateResult(WC_ESP32SHA* ctx)
 {
   assert(NULL == HardwareContext.Context);
@@ -576,6 +592,7 @@ void RestoreIntermediateResult(WC_ESP32SHA* ctx)
   // operation is required before this one is all done. 
   HardwareContext.Context = ctx;
 }
+#endif
 
 /* SetAccelerationContext
  *
@@ -606,12 +623,7 @@ void SetAccelerationContext(WC_ESP32SHA* pContext)
  **/
 void FlipEndian(const word32* pSource, word32* pDestination, size_t szData)
 {
-    int nSwap = szData / sizeof(word32);
-    while (nSwap--)
-    {
-        word32 Temp = __builtin_bswap32(*pSource++);
-        *pDestination++ = Temp;
-    }
+    ByteReverseWords(pDestination, pSource, szData);
 }
 
 /*
