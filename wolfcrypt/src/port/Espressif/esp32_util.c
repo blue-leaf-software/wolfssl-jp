@@ -353,7 +353,7 @@ int esp_ShowExtendedSystemInfo()
  * Note with the right string parameters, the result can be pasted as
  * initialization code.
  */
-int esp_show_mp_attributes(char* c, MATH_INT_T* X)
+int esp_show_mp_attributes(char const * c, MATH_INT_T* X)
 {
     static const char* MP_TAG = "MATH_INT_T";
     int ret = 0;
@@ -376,7 +376,7 @@ int esp_show_mp_attributes(char* c, MATH_INT_T* X)
  * Note with the right string parameters, the result can be pasted as
  * initialization code.
  */
-int esp_show_mp(char* c, MATH_INT_T* X)
+int esp_show_mp(char const* c, MATH_INT_T* X)
 {
     static const char* MP_TAG = "MATH_INT_T";
     int ret = MP_OKAY;

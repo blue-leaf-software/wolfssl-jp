@@ -236,7 +236,7 @@ extern "C"
     int esp_mp_cmp(char* name_A, MATH_INT_T* A, char* name_B, MATH_INT_T* B);
 
     /* Show MATH_INT_T value attributes.  */
-    int esp_show_mp_attributes(char* c, MATH_INT_T* X);
+    int esp_show_mp_attributes(char const* c, MATH_INT_T* X);
 
     /* Show MATH_INT_T value.
      *
@@ -244,7 +244,7 @@ extern "C"
      *
      * During debug, the string name_A can help
      * identify variable name. */
-    int esp_show_mp(char* name_X, MATH_INT_T* X);
+    int esp_show_mp(char const* name_X, MATH_INT_T* X);
 
     /* To use a Mutex, if must first be initialized */
     int esp_CryptHwMutexInit(wolfSSL_Mutex* mutex);
