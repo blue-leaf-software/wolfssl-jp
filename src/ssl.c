@@ -4253,6 +4253,34 @@ size_t wolfSSL_CTX_get_num_tickets(WOLFSSL_CTX* ctx)
 
     return (size_t)ctx->maxTicketTls13;
 }
+
+#if defined(BLS_CHECK_SESSION_TICKET) && defined(WOLFSSL_TICKET_HAVE_ID)
+/* WOLFSSL_SUCCESS on ok */
+int wolfSSL_CTX_set_TicketCheckCb(WOLFSSL_CTX* ctx, SessionTicketCheckCb cb)
+{
+    if (ctx == NULL)
+        return BAD_FUNC_ARG;
+
+    ctx->ticketCheckCb = cb;
+
+    return WOLFSSL_SUCCESS;
+}
+
+
+/* set user context for ticket check callback, WOLFSSL_SUCCESS on ok */
+int wolfSSL_CTX_set_TicketCheckCtx(WOLFSSL_CTX* ctx, void* userCtx)
+{
+    if (ctx == NULL)
+        return BAD_FUNC_ARG;
+
+    ctx->ticketCheckCtx = userCtx;
+
+    return WOLFSSL_SUCCESS;
+}
+
+#endif /* BLS_CHECK_SESSION_TICKET WOLFSSL_TICKET_HAVE_ID */
+
+
 #endif /* WOLFSSL_TLS13 */
 #endif /* !NO_WOLFSSL_SERVER */
 

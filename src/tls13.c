@@ -5879,6 +5879,32 @@ static int DoPreSharedKeys(WOLFSSL* ssl, const byte* input, word32 inputSz,
         }
         if (ret == WOLFSSL_TICKET_RET_OK) {
             ret = DoClientTicketCheck(ssl, current, ssl->timeout, suite);
+
+#if defined(BLS_CHECK_SESSION_TICKET) && defined(WOLFSSL_TICKET_HAVE_ID)
+            if (0 == ret && NULL != ssl->ctx->ticketCheckCb) {
+                ret = ssl->ctx->ticketCheckCb(ssl, current->it->id,
+                    ssl->ctx->ticketCheckCtx);
+                switch (ret)
+                {
+                case WOLFSSL_TICKET_RET_OK:
+                    break;
+
+                case WOLFSSL_TICKET_RET_CREATE:
+                    current->decryptRet = PSK_DECRYPT_CREATE;
+                    break;
+
+                case WOLFSSL_TICKET_RET_REJECT:
+                case WOLFSSL_TICKET_RET_FATAL:
+                    current->decryptRet = PSK_DECRYPT_FAIL;
+                    break;
+                default:
+                    current->decryptRet = PSK_DECRYPT_FAIL;
+                    ret = -1;
+                    break;
+                }
+            }
+#endif
+
             if (ret == 0)
                 DoClientTicketFinalize(ssl, current->it, current->sess);
             if (current->sess_free_cb != NULL) {

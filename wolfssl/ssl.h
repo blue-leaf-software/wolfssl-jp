@@ -4041,6 +4041,9 @@ WOLFSSL_API int wolfSSL_send_SessionTicket(WOLFSSL* ssl);
 #define WOLFSSL_TICKET_NAME_SZ 16
 #define WOLFSSL_TICKET_IV_SZ   16
 #define WOLFSSL_TICKET_MAC_SZ  32
+#if defined(BLS_CHECK_SESSION_TICKET) && defined(WOLFSSL_TICKET_HAVE_ID)
+#define BLS_TICKET_ID_LEN 32
+#endif
 
 enum TicketEncRet {
     WOLFSSL_TICKET_RET_FATAL  = -1,  /* fatal error, don't use ticket */
@@ -4066,6 +4069,15 @@ WOLFSSL_API int wolfSSL_CTX_set_TicketEncCtx(WOLFSSL_CTX* ctx, void* userCtx);
 WOLFSSL_API void* wolfSSL_CTX_get_TicketEncCtx(WOLFSSL_CTX* ctx);
 WOLFSSL_API size_t wolfSSL_CTX_get_num_tickets(WOLFSSL_CTX* ctx);
 WOLFSSL_API int wolfSSL_CTX_set_num_tickets(WOLFSSL_CTX* ctx, size_t mxTickets);
+
+#if defined(BLS_CHECK_SESSION_TICKET) && defined(WOLFSSL_TICKET_HAVE_ID)
+typedef int (*SessionTicketCheckCb)(const WOLFSSL* ssl,
+                                    unsigned char id[BLS_TICKET_ID_LEN],
+                                    void* ticketCheckCtx);
+WOLFSSL_API int wolfSSL_CTX_set_TicketCheckCb(WOLFSSL_CTX* ctx,
+    SessionTicketCheckCb cb);
+WOLFSSL_API int wolfSSL_CTX_set_TicketCheckCtx(WOLFSSL_CTX* ctx, void* userCtx);
+#endif
 
 #endif /* NO_WOLFSSL_SERVER */
 

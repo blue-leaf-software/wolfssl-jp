@@ -3740,6 +3740,10 @@ struct WOLFSSL_CTX {
     #if defined(HAVE_SESSION_TICKET) && !defined(NO_WOLFSSL_SERVER)
         SessionTicketEncCb ticketEncCb;   /* enc/dec session ticket Cb */
         void*              ticketEncCtx;  /* session encrypt context */
+        #if defined(BLS_CHECK_SESSION_TICKET) && defined(WOLFSSL_TICKET_HAVE_ID)
+        SessionTicketCheckCb ticketCheckCb; /* callback to customize ticket check */
+        void* ticketCheckCtx;  /* context for ticketCheckCb */
+        #endif
         #if defined(OPENSSL_ALL) || defined(WOLFSSL_NGINX) || defined(WOLFSSL_HAPROXY) \
           || defined(OPENSSL_EXTRA) || defined(HAVE_LIGHTY)
         ticketCompatCb     ticketEncWrapCb; /* callback for OpenSSL ticket key callback */
